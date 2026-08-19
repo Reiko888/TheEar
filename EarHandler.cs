@@ -9,7 +9,7 @@ namespace TheEar
         public class EarAssets(DuskMod mod, string filePath) : AssetBundleLoader<EarAssets>(mod, filePath) { }
         public EarContentHandler(DuskMod mod) : base(mod)
         {
-            RegisterContent("clara", out earAssets);
+            RegisterContent("theear", out earAssets);
         }
     }
 }
