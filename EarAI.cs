@@ -8,10 +8,26 @@ namespace TheEar
     public class EarAI : EnemyAI , INoiseListener
     {
         public AudioSource footstepSFX;
+        public AudioSource breathingSFX;
+        public AudioSource tentacleSFX;
+        public AudioSource distantSFX;
 
         public AudioClip[] distantScreaming;
         public AudioClip[] alertedScreaming;
         public AudioClip[] wanderingNoises;
+        public AudioClip calmerBreathing;
+        public AudioClip frenziedBreathing;
+        public AudioClip mouthScream;
+        public AudioClip [] goreClips;
+        public AudioClip[] tentacleClips;
+
+        public GameObject tentacleL1Drop;
+        public GameObject tentacleL2Drop;
+        public GameObject tentacleRDrop;
+        public GameObject tentacleMouthStink;
+        public GameObject tentacleMouthStink2;
+        public GameObject tentacleMouthStink3;
+        public GameObject earCanalGunk;
 
         private int earHealth = 3;
         private float wanderSpeed = 5f;
@@ -24,12 +40,13 @@ namespace TheEar
         public Transform torsoPos;
         private float hearNoiseCooldown;
         public int suspicionLevel;
-        public float noiseApproximation = 14f;
+        private float noiseApproximation = 14f;
         private Vector3 previousPosition;
         private Vector3 lastHeardNoisePosition;
         private Vector3 noisePositionGuess;
         private bool hasStartedKillAnim = false;
         private float killAnimTime;
+        private bool hasPlayedGunk = false;
         private PlayerControllerB targetPlayerHolder;
         private Coroutine killPlayerCoroutine;
         private bool isEnraged = false;
@@ -52,7 +69,11 @@ namespace TheEar
             roundManager = UnityEngine.Object.FindObjectOfType<RoundManager>();
             enemyRandom = new System.Random(StartOfRound.Instance.randomMapSeed + thisEnemyIndex);
             enemyHP = earHealth;
-            Debug.Log("Ear spawned. Starting in searching.");
+            if (breathingSFX != null && calmerBreathing != null)
+            {
+                breathingSFX.clip = calmerBreathing;
+                breathingSFX.Play();
+            }
         }
 
         public override void DoAIInterval()
@@ -64,6 +85,58 @@ namespace TheEar
         {
             base.Update();
             if (isEnemyDead) return;
+            if (currentBehaviourStateIndex == 2 || currentBehaviourStateIndex == 3)
+            {
+                if (tentacleSFX != null && tentacleClips != null && tentacleClips.Length > 0 && !tentacleSFX.isPlaying)
+                {
+                    tentacleSFX.clip = tentacleClips[enemyRandom.Next(0, tentacleClips.Length)];
+                    tentacleSFX.Play();
+                }
+                if (breathingSFX != null && frenziedBreathing != null && breathingSFX.clip != frenziedBreathing)
+                {
+                    breathingSFX.clip = frenziedBreathing;
+                    breathingSFX.Play();
+                }
+            }
+            else
+            {
+                if (tentacleSFX != null && tentacleSFX.isPlaying)
+                {
+                    tentacleSFX.Stop();
+                }
+                if (breathingSFX != null && calmerBreathing != null && breathingSFX.clip != calmerBreathing)
+                {
+                    breathingSFX.clip = calmerBreathing;
+                    breathingSFX.Play();
+                }
+            }
+            if (currentBehaviourStateIndex == 1)
+            {
+                if (!hasPlayedGunk)
+                {
+                    hasPlayedGunk = true;
+                    if (earCanalGunk != null)
+                    {
+                        ParticleSystem[] particles = earCanalGunk.GetComponentsInChildren<ParticleSystem>();
+                        for (int i = 0; i < particles.Length; i++)
+                        {
+                            particles[i].Play();
+                        }
+                    }
+                }
+            }
+            else if (currentBehaviourStateIndex == 0)
+            {
+                hasPlayedGunk = false;
+            }
+            bool shouldEnableDrops = (currentBehaviourStateIndex == 2 || currentBehaviourStateIndex == 3);
+            if (tentacleL1Drop != null && tentacleL1Drop.activeSelf != shouldEnableDrops) tentacleL1Drop.SetActive(shouldEnableDrops);
+            if (tentacleL2Drop != null && tentacleL2Drop.activeSelf != shouldEnableDrops) tentacleL2Drop.SetActive(shouldEnableDrops);
+            if (tentacleRDrop != null && tentacleRDrop.activeSelf != shouldEnableDrops) tentacleRDrop.SetActive(shouldEnableDrops);
+            bool shouldEnableStink = (currentBehaviourStateIndex == 3);
+            if (tentacleMouthStink != null && tentacleMouthStink.activeSelf != shouldEnableStink) tentacleMouthStink.SetActive(shouldEnableStink);
+            if (tentacleMouthStink2 != null && tentacleMouthStink2.activeSelf != shouldEnableStink) tentacleMouthStink2.SetActive(shouldEnableStink);
+            if (tentacleMouthStink3 != null && tentacleMouthStink3.activeSelf != shouldEnableStink) tentacleMouthStink3.SetActive(shouldEnableStink);
 
 
             hearNoiseCooldown -= Time.deltaTime;
@@ -141,14 +214,18 @@ namespace TheEar
                     {
                         agent.speed = 0f;
                     }
-                    suspicionTimer -= Time.deltaTime;
-                    if (suspicionTimer <= 0f) //Handle getting less suspicious
+                    if (Vector3.Distance(base.transform.position, agent.destination) < 3f)
                     {
-                        suspicionTimer = 4f; //Every 4 seconds
+                        SearchForPreviouslyHeardSound();
+                    }
+                    suspicionTimer -= Time.deltaTime;
+                    if (suspicionTimer <= 0f)
+                    {
+                        suspicionTimer = 4f;
                         suspicionLevel--;
                         if (suspicionLevel <= 1)
                         {
-                            SwitchToBehaviourState(0); //When suspicion at lowest, go back to calm
+                            SwitchToBehaviourState(0);
                         }
                     }
                     break;
@@ -166,15 +243,15 @@ namespace TheEar
                         agent.speed = 0f;
                     }
                     agent.speed = dashSpeed;
+                    if (Vector3.Distance(base.transform.position, agent.destination) < 3f)
+                    {
+                        SearchForPreviouslyHeardSound();
+                    }
                     suspicionTimer -= Time.deltaTime;
                     if (suspicionTimer <= 0f)
                     {
                         suspicionTimer = 3f;
                         suspicionLevel--;
-                        if (Vector3.Distance(base.transform.position, agent.destination) < 3f)
-                        {
-                            SearchForPreviouslyHeardSound();
-                        }
                         if (suspicionLevel <= 8)
                         {
                             SwitchToBehaviourState(1);
@@ -202,7 +279,7 @@ namespace TheEar
             while (num < 5 && Vector3.Distance(vector, base.transform.position) < 4f)
             {
                 num++;
-                vector = roundManager.GetRandomNavMeshPositionInRadius(lastHeardNoisePosition, lastHeardNoiseDistanceWhenHeard / noiseApproximation);
+                vector = roundManager.GetRandomNavMeshPositionInRadius(lastHeardNoisePosition, 10f);
             }
             SetDestinationToPosition(vector);
             noisePositionGuess = vector;
@@ -217,7 +294,7 @@ namespace TheEar
             }
             hearNoiseCooldown = 0.03f;
             float distance = Vector3.Distance(transform.position, noisePosition);
-            float hearRange = 15f * noiseLoudness;
+            float hearRange = 35f * noiseLoudness;
             if (Physics.Linecast(transform.position, noisePosition, 256))
             {
                 noiseLoudness /= 2f;
@@ -229,6 +306,14 @@ namespace TheEar
             }
             if (distance < hearRange)
             {
+                if (currentBehaviourStateIndex < 2)
+                {
+                    suspicionLevel = 9;
+                }
+                else
+                {
+                    suspicionLevel++;
+                }
                 Vector3 guessedPos = noisePosition;
                 if (distance > 2f)
                 {
@@ -236,7 +321,7 @@ namespace TheEar
                 }
                 noisePositionGuess = guessedPos;
                 lastHeardNoisePosition = noisePosition;
-                Debug.Log("Ear: Noise heard, alerted.");
+                lastHeardNoiseDistanceWhenHeard = distance;
                 AlertEar(noisePositionGuess, distance);
             }
         }
@@ -246,25 +331,50 @@ namespace TheEar
             if (!base.IsOwner)
             {
                 ChangeOwnershipOfEnemy(NetworkManager.Singleton.LocalClientId);
-                Debug.Log("Ownership changed.");
             }
-            if (currentBehaviourStateIndex == 0)
+            if (distanceToNoise < 8f)
             {
-                if (alertedScreaming != null && alertedScreaming.Length > 0 && creatureSFX != null)
+                if (currentBehaviourStateIndex < 2)
                 {
-                    creatureSFX.PlayOneShot(alertedScreaming[enemyRandom.Next(0, alertedScreaming.Length)]);
+                    if (currentBehaviourStateIndex == 0)
+                    {
+                        if (alertedScreaming != null && alertedScreaming.Length > 0 && creatureSFX != null)
+                        {
+                            creatureSFX.PlayOneShot(alertedScreaming[enemyRandom.Next(0, alertedScreaming.Length)]);
+                        }
+                        if (distantScreaming != null && distantScreaming.Length > 0 && distantSFX != null)
+                        {
+                            distantSFX.PlayOneShot(distantScreaming[enemyRandom.Next(0, distantScreaming.Length)]);
+                        }
+                    }
+                    SwitchToBehaviourState(2);
+                    suspicionLevel = 10;
+                    if (wanderFacility != null && wanderFacility.inProgress)
+                    {
+                        StopSearch(wanderFacility);
+                    }
                 }
-                SwitchToBehaviourState(1);
-                if (wanderFacility != null && wanderFacility.inProgress)
+            }
+            else if (suspicionLevel >= 5)
+            {
+                if (currentBehaviourStateIndex == 0)
                 {
-                    StopSearch(wanderFacility);
+                    if (alertedScreaming != null && alertedScreaming.Length > 0 && creatureSFX != null)
+                    {
+                        creatureSFX.PlayOneShot(alertedScreaming[enemyRandom.Next(0, alertedScreaming.Length)]);
+                    }
+                    if (distantScreaming != null && distantScreaming.Length > 0 && distantSFX != null)
+                    {
+                        distantSFX.PlayOneShot(distantScreaming[enemyRandom.Next(0, distantScreaming.Length)]);
+                    }
+                    SwitchToBehaviourState(1);
+                    if (wanderFacility != null && wanderFacility.inProgress)
+                    {
+                        StopSearch(wanderFacility);
+                    }
                 }
             }
             SetDestinationToPosition(targetPosition);
-            if (distanceToNoise < 4f && currentBehaviourStateIndex < 2)
-            {
-                SwitchToBehaviourState(2);
-            }
         }
 
 
@@ -346,7 +456,7 @@ namespace TheEar
             {
                 agent.speed = 0f;
             }
-            targetPlayer.DamagePlayer(80, hasDamageSFX: true, callRPC: true, CauseOfDeath.Mauling);
+            targetPlayer.DamagePlayer(80, hasDamageSFX: true, callRPC: true, CauseOfDeath.Mauling, 1);
             float duration = 5f;
             float elapsed = 0f;
             while (elapsed < duration)
@@ -387,7 +497,7 @@ namespace TheEar
                 elapsed += Time.deltaTime;
                 yield return null;
             }
-            targetPlayer.DamagePlayer(100, hasDamageSFX: true, callRPC: true, CauseOfDeath.Mauling);
+            targetPlayer.DamagePlayer(100, hasDamageSFX: true, callRPC: true, CauseOfDeath.Mauling, 1);
             if (IsServer)
             {
                 KillFinishedServerRpc((int)targetPlayer.playerClientId);
@@ -409,11 +519,16 @@ namespace TheEar
         {
             hasStartedKillAnim = false;
             inSpecialAnimation = false;
+            hearNoiseCooldown = 2f;
             Debug.Log("EAR: Kill finished.");
             if (targetPlayerHolder != null)
             {
                 targetPlayerHolder.inAnimationWithEnemy = null;
                 targetPlayerHolder = null;
+            }
+            if (creatureAnimator != null)
+            {
+                creatureAnimator.SetBool("isExecuting", false);
             }
             SwitchToBehaviourState(2);
         }
@@ -438,6 +553,10 @@ namespace TheEar
             }
             inSpecialAnimation = false;
             hasStartedKillAnim = false;
+            if (creatureAnimator != null)
+            {
+                creatureAnimator.SetBool("isExecuting", false);
+            }
             if (hitterId != -1)
             {
                 PlayerControllerB hitter = StartOfRound.Instance.allPlayerScripts[hitterId];
@@ -453,6 +572,16 @@ namespace TheEar
         public void CancelKillAnimationWithPlayerClientRpc(int playerObjectId)
         {
             StartOfRound.Instance.allPlayerScripts[playerObjectId].inAnimationWithEnemy = null;
+        }
+
+        public override void KillEnemy(bool destroy = false)
+        {
+            base.KillEnemy(destroy);
+            if (distantSFX != null) distantSFX.Stop();
+            if (creatureSFX != null) creatureSFX.Stop();
+            if (tentacleSFX != null) tentacleSFX.Stop();
+            if (breathingSFX != null) breathingSFX.Stop();
+            if (footstepSFX != null) footstepSFX.Stop();
         }
     }
 }
