@@ -20,6 +20,7 @@ namespace TheEar
         public AudioClip mouthScream;
         public AudioClip [] goreClips;
         public AudioClip[] tentacleClips;
+        public AudioClip[] enragedScreams;
 
         public GameObject tentacleL1Drop;
         public GameObject tentacleL2Drop;
@@ -55,6 +56,10 @@ namespace TheEar
         private RoundManager roundManager;
         private float lastHeardNoiseDistanceWhenHeard;
         private float wanderNoiseTimer;
+        private float timeSinceHittingOtherEnemy;
+        private float noiseOverwhelmAccumulator;
+        private float overwhelmTimer;
+        private bool hasScreamedOverwhelmed;
 
 
         //Behaviour States
@@ -83,11 +88,28 @@ namespace TheEar
         {
             base.Update();
             if (isEnemyDead) return;
+            timeSinceHittingOtherEnemy += Time.deltaTime;
+            noiseOverwhelmAccumulator = Mathf.Max(0f, noiseOverwhelmAccumulator - Time.deltaTime);
+            if (overwhelmTimer > 0f)
+            {
+                overwhelmTimer -= Time.deltaTime;
+                if (!hasScreamedOverwhelmed)
+                {
+                    hasScreamedOverwhelmed = true;
+                    creatureVoice.PlayOneShot(enragedScreams[enemyRandom.Next(0, enragedScreams.Length)]);
+                }
+                creatureAnimator.SetLayerWeight(2, 1f);
+                creatureAnimator.SetLayerWeight(1, 0f);
+            }
+            else
+            {
+                creatureAnimator.SetLayerWeight(2, 0f);
+            }
             debugLogTimer -= Time.deltaTime;
             if (debugLogTimer <= 0f)
             {
                 debugLogTimer = 1f;
-                Debug.Log("EAR: State=" + currentBehaviourStateIndex + " Owner=" + base.IsOwner + " Suspicion=" + suspicionLevel + " Timer=" + suspicionTimer);
+                Debug.Log("EAR: State=" + currentBehaviourStateIndex + " Owner=" + base.IsOwner + " Suspicion=" + suspicionLevel + " Timer=" + suspicionTimer + " OverwhelmAcc=" + noiseOverwhelmAccumulator + " IsOverwhelmed=" + (overwhelmTimer > 0f));
             }
             if (currentBehaviourStateIndex == 2 || currentBehaviourStateIndex == 3)
             {
@@ -261,7 +283,10 @@ namespace TheEar
                     break;
 
             }
-
+            if (overwhelmTimer > 0f)
+            {
+                agent.speed = 0.5f;
+            }
             }
 
         //helpers
@@ -298,6 +323,16 @@ namespace TheEar
             {
                 return;
             }
+            if (noiseLoudness >= 0.5f && overwhelmTimer <= 0f)
+            {
+                noiseOverwhelmAccumulator += noiseLoudness;
+                if (noiseOverwhelmAccumulator >= 5f)
+                {
+                    noiseOverwhelmAccumulator = 0f;
+                    overwhelmTimer = 4f;
+                    hasScreamedOverwhelmed = false;
+                }
+            }
             if (distance < hearRange)
             {
                 if (currentBehaviourStateIndex < 2)
@@ -331,6 +366,7 @@ namespace TheEar
             {
                 if (currentBehaviourStateIndex < 2)
                 {
+                    creatureVoice.PlayOneShot(enragedScreams[enemyRandom.Next(0, enragedScreams.Length)]);
                     if (currentBehaviourStateIndex == 0)
                     {
                         creatureSFX.PlayOneShot(alertedScreaming[enemyRandom.Next(0, alertedScreaming.Length)]);
@@ -378,7 +414,7 @@ namespace TheEar
                     KillEnemyOnOwnerClient(); //This is called in EnemyAI, creatureAnimator.SetBool("Dead", value: true); use it in animator
                     return;
                 }
-                if (inSpecialAnimation)
+                if (inSpecialAnimation && playerWhoHit != targetPlayerHolder)
                 {
                     StopKillAnimationServerRpc(playerWhoHit != null ? (int)playerWhoHit.playerClientId : -1);
                 }
@@ -392,14 +428,38 @@ namespace TheEar
         public override void OnCollideWithPlayer(Collider other)
         {
             base.OnCollideWithPlayer(other);
+            if (overwhelmTimer > 0f) return;
             PlayerControllerB playerControllerB = MeetsStandardPlayerCollisionConditions(other, hasStartedKillAnim);
             Debug.Log("EAR: Collision detected.");
             if (playerControllerB != null && !hasStartedKillAnim && !inSpecialAnimation)
             {
                 if (currentBehaviourStateIndex == 2)
                 {
-                    playerControllerB.inAnimationWithEnemy = this;
-                    GrabPlayerServerRpc((int)playerControllerB.playerClientId);
+                    if (playerControllerB.health < 80)
+                    {
+                        creatureAnimator.SetTrigger("attack");
+                        playerControllerB.DamagePlayer(100, hasDamageSFX: true, callRPC: true, CauseOfDeath.Mauling, 0);
+                    }
+                    else
+                    {
+                        playerControllerB.inAnimationWithEnemy = this;
+                        GrabPlayerServerRpc((int)playerControllerB.playerClientId);
+                    }
+                }
+            }
+        }
+
+        public override void OnCollideWithEnemy(Collider other, EnemyAI collidedEnemy)
+        {
+            base.OnCollideWithEnemy(other, collidedEnemy);
+            if (overwhelmTimer > 0f) return;
+            if (collidedEnemy.enemyType != enemyType && collidedEnemy.enemyType.canDie && timeSinceHittingOtherEnemy >= 1f)
+            {
+                if (currentBehaviourStateIndex == 2)
+                {
+                    timeSinceHittingOtherEnemy = 0f;
+                    creatureAnimator.SetTrigger("attack");
+                    collidedEnemy.HitEnemy(2, null, playHitSFX: true);
                 }
             }
         }
