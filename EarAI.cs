@@ -75,6 +75,7 @@ namespace TheEar
         private float attackTransitionCooldown;
         private bool serverIsAttackingOrGrabbing;
         private bool isExecutingKill;
+        private bool wasStunned;
 
         //Behaviour States
         //0 - Calm
@@ -184,7 +185,7 @@ namespace TheEar
             if (debugLogTimer <= 0f)
             {
                 debugLogTimer = 1f;
-                Debug.Log("EAR: State=" + currentBehaviourStateIndex + " Owner=" + base.IsOwner + " Suspicion=" + suspicionLevel + " Timer=" + suspicionTimer + " OverwhelmAcc=" + noiseOverwhelmAccumulator + " IsOverwhelmed=" + (overwhelmTimer > 0f));
+                //Debug.Log("EAR: State=" + currentBehaviourStateIndex + " Owner=" + base.IsOwner + " Suspicion=" + suspicionLevel + " Timer=" + suspicionTimer + " OverwhelmAcc=" + noiseOverwhelmAccumulator + " IsOverwhelmed=" + (overwhelmTimer > 0f));
             }
             if (currentBehaviourStateIndex == 2 || currentBehaviourStateIndex == 3) //In enraged and execution
             {
@@ -227,10 +228,11 @@ namespace TheEar
 
             if (stunNormalizedTimer > 0f)
             {
+                wasStunned = true;
                 agent.speed = 0f;
                 if (creatureAnimator != null)
                 {
-                    creatureAnimator.SetLayerWeight(1, 1f); //Set stun layer to override base layer
+                    creatureAnimator.SetBool("stunned", true);
                 }
                 if (hasStartedKillAnim && IsServer)
                 {
@@ -241,7 +243,31 @@ namespace TheEar
             {
                 if (creatureAnimator != null)
                 {
-                    creatureAnimator.SetLayerWeight(1, 0f);
+                    creatureAnimator.SetBool("stunned", false);
+                }
+                if (wasStunned)
+                {
+                    wasStunned = false;
+                    if (base.IsOwner)
+                    {
+                        if (suspicionLevel <= 1)
+                        {
+                            SwitchToBehaviourState(0);
+                        }
+                        else if (suspicionLevel <= 8)
+                        {
+                            string state2Param = enemyBehaviourStates[2].parameterString;
+                            if (enemyBehaviourStates[2].IsAnimTrigger)
+                            {
+                                creatureAnimator.ResetTrigger(state2Param);
+                            }
+                            SwitchToBehaviourState(1);
+                        }
+                        else
+                        {
+                            SwitchToBehaviourState(2);
+                        }
+                    }
                 }
             }
             if (currentBehaviourStateIndex == 3 || inSpecialAnimation)
@@ -258,10 +284,14 @@ namespace TheEar
                 case 0:
                     if (base.IsOwner)
                     {
-                        agent.speed = wanderSpeed;
-                        if (stunNormalizedTimer > 0f)
+                        if (stunNormalizedTimer <= 0f)
+                        {
+                            agent.speed = wanderSpeed;
+                        }
+                        else
                         {
                             agent.speed = 0f;
+                            agent.velocity = Vector3.zero;
                         }
                         if (base.IsOwner && !wanderFacility.inProgress)
                         {
@@ -282,10 +312,14 @@ namespace TheEar
                     {
                         StopSearch(wanderFacility);
                     }
-                    agent.speed = investigateSpeed;
-                    if (stunNormalizedTimer > 0f)
+                    if (stunNormalizedTimer <= 0f)
+                    {
+                        agent.speed = investigateSpeed;
+                    }
+                    else
                     {
                         agent.speed = 0f;
+                        agent.velocity = Vector3.zero;
                     }
                     if (!agent.pathPending && Vector3.Distance(base.transform.position, agent.destination) < 3f)
                     {
@@ -316,16 +350,25 @@ namespace TheEar
                     {
                         StopSearch(wanderFacility);
                     }
-                    if (stunNormalizedTimer > 0f)
+                    if (stunNormalizedTimer <= 0f)
+                    {
+                        agent.speed = dashSpeed;
+                    }
+                    else
                     {
                         agent.speed = 0f;
+                        agent.velocity = Vector3.zero;
                     }
-                    agent.speed = dashSpeed;
                     if (breakDoorTimer <= 0f && cachedDoors != null)
                     {
                         foreach (DoorLock door in cachedDoors) //loop through cached doors
                         {
                             if (door == null) continue;
+                            AnimatedObjectTrigger animTrigger = door.GetComponent<AnimatedObjectTrigger>();
+                            if (animTrigger != null && animTrigger.boolValue && !door.isLocked)
+                            {
+                                continue;
+                            }
                             GameObject doorObj = door.transform.parent.transform.parent.transform.parent.gameObject;
                             if (!doorObj.GetComponent<Rigidbody>() && Vector3.Distance(transform.position, doorObj.transform.position) <= 4f)
                             {
@@ -488,11 +531,8 @@ namespace TheEar
                 if (currentBehaviourStateIndex < 2)
                 {
                     creatureVoice.PlayOneShot(enragedScreams[enemyRandom.Next(0, enragedScreams.Length)]);
-                    if (currentBehaviourStateIndex == 0)
-                    {
-                        creatureSFX.PlayOneShot(alertedScreaming[enemyRandom.Next(0, alertedScreaming.Length)]);
-                        distantSFX.PlayOneShot(distantScreaming[enemyRandom.Next(0, distantScreaming.Length)]);
-                    }
+                    creatureSFX.PlayOneShot(alertedScreaming[enemyRandom.Next(0, alertedScreaming.Length)]);
+                    distantSFX.PlayOneShot(distantScreaming[enemyRandom.Next(0, distantScreaming.Length)]);
                     SwitchToBehaviourState(2);
                     suspicionLevel = 10;
                     SyncSuspicionServerRpc(suspicionLevel);
@@ -528,6 +568,9 @@ namespace TheEar
             }
             base.HitEnemy(force, playerWhoHit, playHitSFX, hitID);
             enemyHP -= force;
+            creatureSFX.PlayOneShot(enemyType.hitBodySFX);
+            creatureVoice.PlayOneShot(enemyType.hitEnemyVoiceSFX);
+
             if (base.IsOwner)
             {
                 if (enemyHP <= 0)
@@ -551,6 +594,23 @@ namespace TheEar
             }
         }
 
+        public override void SetEnemyStunned(bool setToStunned, float setToStunTime = 1f, PlayerControllerB setStunnedByPlayer = null)
+        {
+            base.SetEnemyStunned(setToStunned, setToStunTime, setStunnedByPlayer);
+            if (isEnemyDead || !enemyType.canBeStunned) return;
+
+            if (setToStunned && postStunInvincibilityTimer <= 0f)
+            {
+                creatureVoice.PlayOneShot(enemyType.stunSFX);
+
+                if (base.IsOwner)
+                {
+                    agent.speed = 0f;
+                    agent.velocity = Vector3.zero;
+                }
+            }
+        }
+
         public override void OnCollideWithPlayer(Collider other)
         {
             base.OnCollideWithPlayer(other);
@@ -558,7 +618,7 @@ namespace TheEar
             if (!base.IsOwner) return;
             if (killCooldown > 0f || isExecutingKill) return;
             PlayerControllerB playerControllerB = MeetsStandardPlayerCollisionConditions(other, hasStartedKillAnim);
-            Debug.Log("EAR: Collision detected.");
+            //Debug.Log("EAR: Collision detected.");
             if (playerControllerB != null && !hasStartedKillAnim && !inSpecialAnimation && !isExecutingKill)
             {
                 if (currentBehaviourStateIndex == 2)
@@ -647,7 +707,7 @@ namespace TheEar
         [ClientRpc]
         public void GrabPlayerClientRpc(int playerId)
         {
-            Debug.Log($"!!AR Client!!:Grab player called. playerId={playerId}, IsOwner={base.IsOwner}");
+            Debug.Log($"!!EAR Client!!:Grab player called. playerId={playerId}, IsOwner={base.IsOwner}");
             if (killPlayerCoroutine != null)
             {
                 StopCoroutine(killPlayerCoroutine);
