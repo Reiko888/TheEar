@@ -21,6 +21,7 @@ namespace TheEar
         public AudioClip [] goreClips;
         public AudioClip[] tentacleClips;
         public AudioClip[] enragedScreams;
+        public AudioClip[] doorSlam;
 
         public GameObject tentacleL1Drop;
         public GameObject tentacleL2Drop;
@@ -30,10 +31,10 @@ namespace TheEar
         public GameObject tentacleMouthStink3;
         public GameObject earCanalGunk;
 
-        private int earHealth = 3;
-        private float wanderSpeed = 5f;
-        private float investigateSpeed = 6f;
-        private float dashSpeed = 8.5f;
+        private int earHealth;
+        private float wanderSpeed;
+        private float investigateSpeed;
+        private float dashSpeed;
 
         public AISearchRoutine wanderFacility;
         private System.Random enemyRandom;
@@ -47,7 +48,6 @@ namespace TheEar
         private Vector3 noisePositionGuess;
         private bool hasStartedKillAnim = false;
         private float killAnimTime;
-        private bool hasPlayedGunk = false;
         private float debugLogTimer = 1f;
         private PlayerControllerB targetPlayerHolder;
         private Coroutine killPlayerCoroutine;
@@ -60,7 +60,20 @@ namespace TheEar
         private float noiseOverwhelmAccumulator;
         private float overwhelmTimer;
         private bool hasScreamedOverwhelmed;
-
+        private DoorLock[] cachedDoors;
+        private float breakDoorTimer;
+        private float slowTimer;
+        private int previousState;
+        private float hearingRangeMultiplier;
+        private float wanderSearchWidth = 400f;
+        private float wanderSearchPrecision = 15f;
+        private float voiceOverwhelmMultiplier;
+        private float normalOverwhelmMultiplier;
+        private float voiceLoudnessThreshold = 0.5f;
+        private float normalLoudnessThreshold = 1.5f;
+        private float killCooldown;
+        private float attackTransitionCooldown;
+        private bool serverIsAttackingOrGrabbing;
 
         //Behaviour States
         //0 - Calm
@@ -72,6 +85,21 @@ namespace TheEar
         public override void Start()
         {
             base.Start();
+            earHealth = EarContentHandler.Instance.earAssets.GetConfig<int>("Ear health").Value;
+            wanderSpeed = EarContentHandler.Instance.earAssets.GetConfig<float>("Wander speed").Value;
+            investigateSpeed = EarContentHandler.Instance.earAssets.GetConfig<float>("Investigating speed").Value;
+            dashSpeed = EarContentHandler.Instance.earAssets.GetConfig<float>("Frenzied speed").Value;
+            hearingRangeMultiplier = EarContentHandler.Instance.earAssets.GetConfig<float>("Hearing range multiplier").Value;
+            voiceOverwhelmMultiplier = EarContentHandler.Instance.earAssets.GetConfig<float>("Voice overwhelm multiplier").Value;
+            normalOverwhelmMultiplier = EarContentHandler.Instance.earAssets.GetConfig<float>("Normal overwhelm multiplier").Value;
+
+            previousState = currentBehaviourStateIndex;
+            if (wanderFacility != null)
+            {
+                wanderFacility.searchWidth = wanderSearchWidth;
+                wanderFacility.searchPrecision = wanderSearchPrecision;
+            }
+            cachedDoors = UnityEngine.Object.FindObjectsOfType<DoorLock>();
             roundManager = UnityEngine.Object.FindObjectOfType<RoundManager>();
             enemyRandom = new System.Random(StartOfRound.Instance.randomMapSeed + thisEnemyIndex);
             enemyHP = earHealth;
@@ -88,7 +116,48 @@ namespace TheEar
         {
             base.Update();
             if (isEnemyDead) return;
+            if (killCooldown > 0f)
+            {
+                killCooldown -= Time.deltaTime;
+            }
+            if (previousState == 0 && (currentBehaviourStateIndex == 1 || currentBehaviourStateIndex == 2))
+            {
+                if (earCanalGunk != null)
+                {
+                    ParticleSystem[] particles = earCanalGunk.GetComponentsInChildren<ParticleSystem>();
+                    for (int i = 0; i < particles.Length; i++)
+                    {
+                        particles[i].Play();
+                    }
+                }
+            }
+            previousState = currentBehaviourStateIndex;
+            if (GameNetworkManager.Instance != null && GameNetworkManager.Instance.localPlayerController != null && !GameNetworkManager.Instance.localPlayerController.isPlayerDead)
+            {
+                if (currentBehaviourStateIndex == 2)
+                {
+                    if (GameNetworkManager.Instance.localPlayerController.HasLineOfSightToPosition(transform.position, 50f, 25, 10f))
+                    {
+                        GameNetworkManager.Instance.localPlayerController.JumpToFearLevel(1f);
+                    }
+                }
+                else
+                {
+                    if (GameNetworkManager.Instance.localPlayerController.HasLineOfSightToPosition(transform.position, 50f, 30, 5f))
+                    {
+                        GameNetworkManager.Instance.localPlayerController.IncreaseFearLevelOverTime(0.25f, 0.3f);
+                    }
+                }
+            }
             timeSinceHittingOtherEnemy += Time.deltaTime;
+            if (breakDoorTimer > 0f)
+            {
+                breakDoorTimer -= Time.deltaTime;
+            }
+            if (slowTimer > 0f)
+            {
+                slowTimer -= Time.deltaTime;
+            }
             noiseOverwhelmAccumulator = Mathf.Max(0f, noiseOverwhelmAccumulator - Time.deltaTime);
             if (overwhelmTimer > 0f)
             {
@@ -98,12 +167,11 @@ namespace TheEar
                     hasScreamedOverwhelmed = true;
                     creatureVoice.PlayOneShot(enragedScreams[enemyRandom.Next(0, enragedScreams.Length)]);
                 }
-                creatureAnimator.SetLayerWeight(2, 1f);
-                creatureAnimator.SetLayerWeight(1, 0f);
+                creatureAnimator.SetBool("isOverwhelmed", true);
             }
             else
             {
-                creatureAnimator.SetLayerWeight(2, 0f);
+                creatureAnimator.SetBool("isOverwhelmed", false);
             }
             debugLogTimer -= Time.deltaTime;
             if (debugLogTimer <= 0f)
@@ -113,36 +181,21 @@ namespace TheEar
             }
             if (currentBehaviourStateIndex == 2 || currentBehaviourStateIndex == 3)
             {
-                    tentacleSFX.clip = tentacleClips[enemyRandom.Next(0, tentacleClips.Length)];
-                    tentacleSFX.Play();
+                if (breathingSFX.clip != frenziedBreathing)
+                {
                     breathingSFX.clip = frenziedBreathing;
                     breathingSFX.Play();
+                }
             }
             else
             {
-                tentacleSFX.Stop();
-                breathingSFX.clip = calmerBreathing;
-                breathingSFX.Play();
-            }
-            if (currentBehaviourStateIndex == 1)
-            {
-                if (!hasPlayedGunk)
+                if (breathingSFX.clip != calmerBreathing)
                 {
-                    hasPlayedGunk = true;
-                    if (earCanalGunk != null)
-                    {
-                        ParticleSystem[] particles = earCanalGunk.GetComponentsInChildren<ParticleSystem>();
-                        for (int i = 0; i < particles.Length; i++)
-                        {
-                            particles[i].Play();
-                        }
-                    }
+                    breathingSFX.clip = calmerBreathing;
+                    breathingSFX.Play();
                 }
             }
-            else if (currentBehaviourStateIndex == 0)
-            {
-                hasPlayedGunk = false;
-            }
+
             bool shouldEnableDrops = (currentBehaviourStateIndex == 2 || currentBehaviourStateIndex == 3);
             if (tentacleL1Drop != null && tentacleL1Drop.activeSelf != shouldEnableDrops) tentacleL1Drop.SetActive(shouldEnableDrops);
             if (tentacleL2Drop != null && tentacleL2Drop.activeSelf != shouldEnableDrops) tentacleL2Drop.SetActive(shouldEnableDrops);
@@ -184,6 +237,14 @@ namespace TheEar
                     creatureAnimator.SetLayerWeight(1, 0f);
                 }
             }
+            if (currentBehaviourStateIndex == 3 || inSpecialAnimation)
+            {
+                if (base.IsOwner)
+                {
+                    agent.speed = 0f;
+                    agent.velocity = Vector3.zero;
+                }
+            }
 
             switch (currentBehaviourStateIndex)
             {
@@ -199,12 +260,6 @@ namespace TheEar
                         {
                             StartSearch(base.transform.position, wanderFacility);
                         }
-                    }
-                    wanderNoiseTimer -= Time.deltaTime;
-                    if (wanderNoiseTimer <= 0f)
-                    {
-                        wanderNoiseTimer = UnityEngine.Random.Range(8f, 15f);
-                        creatureSFX.PlayOneShot(wanderingNoises[enemyRandom.Next(0, wanderingNoises.Length)]);
                     }
                     break;
                 case 1:
@@ -225,7 +280,7 @@ namespace TheEar
                     {
                         agent.speed = 0f;
                     }
-                    if (Vector3.Distance(base.transform.position, agent.destination) < 3f)
+                    if (!agent.pathPending && Vector3.Distance(base.transform.position, agent.destination) < 3f)
                     {
                         SearchForPreviouslyHeardSound();
                     }
@@ -234,9 +289,14 @@ namespace TheEar
                     {
                         suspicionTimer = 4f;
                         suspicionLevel--;
+                        SyncSuspicionServerRpc(suspicionLevel);
                         if (suspicionLevel <= 1)
                         {
                             SwitchToBehaviourState(0);
+                            if (base.IsOwner && !IsServer)
+                            {
+                                ChangeOwnershipOfEnemy(0);
+                            }
                         }
                     }
                     break;
@@ -254,7 +314,23 @@ namespace TheEar
                         agent.speed = 0f;
                     }
                     agent.speed = dashSpeed;
-                    if (Vector3.Distance(base.transform.position, agent.destination) < 3f)
+                    if (breakDoorTimer <= 0f && cachedDoors != null)
+                    {
+                        foreach (DoorLock door in cachedDoors)
+                        {
+                            if (door == null) continue;
+                            GameObject doorObj = door.transform.parent.transform.parent.transform.parent.gameObject;
+                            if (!doorObj.GetComponent<Rigidbody>() && Vector3.Distance(transform.position, doorObj.transform.position) <= 4f)
+                            {
+                                breakDoorTimer = 1f;
+                                creatureAnimator.SetTrigger("breakDoor");
+                                Vector3 pushForce = (doorObj.transform.position - transform.position).normalized * 20f;
+                                BreakDoorServerRpc(doorObj, pushForce);
+                                break;
+                            }
+                        }
+                    }
+                    if (!agent.pathPending && Vector3.Distance(base.transform.position, agent.destination) < 3f)
                     {
                         SearchForPreviouslyHeardSound();
                     }
@@ -263,6 +339,7 @@ namespace TheEar
                     {
                         suspicionTimer = 3f;
                         suspicionLevel--;
+                        SyncSuspicionServerRpc(suspicionLevel);
                         if (suspicionLevel <= 8)
                         {
                             string state2Param = enemyBehaviourStates[2].parameterString;
@@ -283,9 +360,35 @@ namespace TheEar
                     break;
 
             }
+            if (currentBehaviourStateIndex == 0 || currentBehaviourStateIndex == 1)
+            {
+                wanderNoiseTimer -= Time.deltaTime;
+                if (wanderNoiseTimer <= 0f)
+                {
+                    wanderNoiseTimer = UnityEngine.Random.Range(8f, 15f);
+                    creatureSFX.PlayOneShot(wanderingNoises[enemyRandom.Next(0, wanderingNoises.Length)]);
+                }
+            }
+            if (slowTimer > 0f)
+            {
+                agent.speed = 0.2f;
+            }
+            if (breakDoorTimer > 0f)
+            {
+                agent.speed = 0f;
+            }
             if (overwhelmTimer > 0f)
             {
                 agent.speed = 0.5f;
+            }
+            if (attackTransitionCooldown > 0f)
+            {
+                attackTransitionCooldown -= Time.deltaTime;
+                if (base.IsOwner)
+                {
+                    agent.speed = 0f;
+                    agent.velocity = Vector3.zero;
+                }
             }
             }
 
@@ -307,13 +410,14 @@ namespace TheEar
         public override void DetectNoise(Vector3 noisePosition, float noiseLoudness, int timesNoisePlayedInOneSpot = 0, int noiseID = 0)
         {
             base.DetectNoise(noisePosition, noiseLoudness, timesNoisePlayedInOneSpot, noiseID);
-            if (isEnemyDead || stunNormalizedTimer > 0f || hearNoiseCooldown > 0f || hasStartedKillAnim)
+
+            if (isEnemyDead || stunNormalizedTimer > 0f || hearNoiseCooldown > 0f || hasStartedKillAnim || noiseID == 546 || noiseID == 7 || timesNoisePlayedInOneSpot > 15)
             {
                 return;
             }
             hearNoiseCooldown = 0.03f;
             float distance = Vector3.Distance(transform.position, noisePosition);
-            float hearRange = 35f * noiseLoudness;
+            float hearRange = hearingRangeMultiplier * noiseLoudness;
             if (Physics.Linecast(transform.position, noisePosition, 256))
             {
                 noiseLoudness /= 2f;
@@ -323,18 +427,34 @@ namespace TheEar
             {
                 return;
             }
-            if (noiseLoudness >= 0.5f && overwhelmTimer <= 0f)
+            if (overwhelmTimer <= 0f)
             {
-                noiseOverwhelmAccumulator += noiseLoudness;
+                if (noiseID == 75)
+                {
+                    if (noiseLoudness >= voiceLoudnessThreshold)
+                    {
+                        noiseOverwhelmAccumulator += noiseLoudness * voiceOverwhelmMultiplier;
+                    }
+                }
+                else
+                {
+                    if (noiseLoudness >= normalLoudnessThreshold)
+                    {
+                        noiseOverwhelmAccumulator += noiseLoudness * normalOverwhelmMultiplier;
+                    }
+                }
                 if (noiseOverwhelmAccumulator >= 5f)
                 {
                     noiseOverwhelmAccumulator = 0f;
-                    overwhelmTimer = 4f;
-                    hasScreamedOverwhelmed = false;
+                    TriggerOverwhelmServerRpc();
                 }
             }
             if (distance < hearRange)
             {
+                if (!base.IsOwner)
+                {
+                    ChangeOwnershipOfEnemy(NetworkManager.Singleton.LocalClientId);
+                }
                 if (currentBehaviourStateIndex < 2)
                 {
                     suspicionLevel = 9;
@@ -344,24 +464,18 @@ namespace TheEar
                     suspicionLevel++;
                 }
                 suspicionLevel = Mathf.Min(suspicionLevel, 10);
+                SyncSuspicionServerRpc(suspicionLevel);
                 Vector3 guessedPos = noisePosition;
                 if (distance > 2f)
                 {
                     guessedPos = RoundManager.Instance.GetRandomNavMeshPositionInRadius(noisePosition, distance / noiseApproximation);
                 }
-                noisePositionGuess = guessedPos;
-                lastHeardNoisePosition = noisePosition;
-                lastHeardNoiseDistanceWhenHeard = distance;
-                AlertEar(noisePositionGuess, distance);
+                SyncNoiseTargetServerRpc(guessedPos, distance);
             }
         }
 
-        private void AlertEar(Vector3 targetPosition, float distanceToNoise)
+        private void ApplyNoiseAlert(Vector3 targetPosition, float distanceToNoise)
         {
-            if (!base.IsOwner)
-            {
-                ChangeOwnershipOfEnemy(NetworkManager.Singleton.LocalClientId);
-            }
             if (distanceToNoise < 8f)
             {
                 if (currentBehaviourStateIndex < 2)
@@ -374,6 +488,7 @@ namespace TheEar
                     }
                     SwitchToBehaviourState(2);
                     suspicionLevel = 10;
+                    SyncSuspicionServerRpc(suspicionLevel);
                     if (wanderFacility != null && wanderFacility.inProgress)
                     {
                         StopSearch(wanderFacility);
@@ -400,6 +515,10 @@ namespace TheEar
 
         public override void HitEnemy(int force = 1, PlayerControllerB playerWhoHit = null, bool playHitSFX = false, int hitID = -1)
         {
+            if (inSpecialAnimation && playerWhoHit == targetPlayerHolder)
+            {
+                return;
+            }
             base.HitEnemy(force, playerWhoHit, playHitSFX, hitID);
             enemyHP -= force;
             if (base.IsOwner)
@@ -429,37 +548,32 @@ namespace TheEar
         {
             base.OnCollideWithPlayer(other);
             if (overwhelmTimer > 0f) return;
+            if (!base.IsOwner) return;
+            if (killCooldown > 0f) return;
             PlayerControllerB playerControllerB = MeetsStandardPlayerCollisionConditions(other, hasStartedKillAnim);
             Debug.Log("EAR: Collision detected.");
             if (playerControllerB != null && !hasStartedKillAnim && !inSpecialAnimation)
             {
                 if (currentBehaviourStateIndex == 2)
                 {
-                    if (playerControllerB.health < 80)
-                    {
-                        creatureAnimator.SetTrigger("attack");
-                        playerControllerB.DamagePlayer(100, hasDamageSFX: true, callRPC: true, CauseOfDeath.Mauling, 0);
-                    }
-                    else
-                    {
-                        playerControllerB.inAnimationWithEnemy = this;
-                        GrabPlayerServerRpc((int)playerControllerB.playerClientId);
-                    }
+                    GrabPlayerServerRpc((int)playerControllerB.playerClientId);
                 }
             }
         }
 
-        public override void OnCollideWithEnemy(Collider other, EnemyAI collidedEnemy)
+        public override void OnCollideWithEnemy(Collider other, EnemyAI collidedEnemy = null)
         {
             base.OnCollideWithEnemy(other, collidedEnemy);
             if (overwhelmTimer > 0f) return;
-            if (collidedEnemy.enemyType != enemyType && collidedEnemy.enemyType.canDie && timeSinceHittingOtherEnemy >= 1f)
+            if (collidedEnemy != null && collidedEnemy.enemyType != enemyType && !collidedEnemy.isEnemyDead && currentBehaviourStateIndex == 2)
             {
-                if (currentBehaviourStateIndex == 2)
+                slowTimer = 1f;
+                if (collidedEnemy.enemyType.canDie && timeSinceHittingOtherEnemy >= 1f)
                 {
                     timeSinceHittingOtherEnemy = 0f;
                     creatureAnimator.SetTrigger("attack");
                     collidedEnemy.HitEnemy(2, null, playHitSFX: true);
+                    TriggerLocalCameraShake();
                 }
             }
         }
@@ -467,29 +581,71 @@ namespace TheEar
         [ServerRpc(RequireOwnership = false)]
         public void GrabPlayerServerRpc(int playerId)
         {
-            if (!hasStartedKillAnim)
+            Debug.Log($"EAR !!SERVER!!: Player grab  called playerId={playerId}, Atttack or grab?={serverIsAttackingOrGrabbing}, hasStartedKillAnim={hasStartedKillAnim}");
+            if (serverIsAttackingOrGrabbing || hasStartedKillAnim)
             {
-                hasStartedKillAnim = true;
-                GrabPlayerClientRpc(playerId);
+                Debug.Log("EAR !!SERVER!!: G rab player early return due to active guard.");
+                return;
+            }
+            PlayerControllerB player = StartOfRound.Instance.allPlayerScripts[playerId];
+            if (player == null || player.isPlayerDead)
+            {
+                Debug.Log($"EAR !!SERVER!!: Grab player early return. player is null or dead. isPlayerDead={player?.isPlayerDead}");
+                return;
+            }
+            Debug.Log($"EAR !!SERVER!! Checking player health on server. playerHealth={player.health}");
+            if (player.health < 80)
+            {
+                serverIsAttackingOrGrabbing = true;
+                Debug.Log("EAR !!SERVER!!: Health is below 80. Triggering tentacle slap attack");
+                TriggerAttackClientRpc();
+                player.DamagePlayer(100, hasDamageSFX: true, callRPC: true, CauseOfDeath.Mauling, 0);
+                StartCoroutine(ResetKillAnimFlagAfterDelay(3f));
             }
             else
             {
-                CancelKillAnimationWithPlayerClientRpc(playerId);
+                serverIsAttackingOrGrabbing = true;
+                hasStartedKillAnim = true;
+                Debug.Log("EAR !!SERVER!!: Health is 80 or above. Triggering Grab Execution.");
+                GrabPlayerClientRpc(playerId);
             }
+        }
+
+        private IEnumerator ResetKillAnimFlagAfterDelay(float delay)
+        {
+            yield return new WaitForSeconds(delay);
+            serverIsAttackingOrGrabbing = false;
+            hasStartedKillAnim = false;
+            Debug.Log("EAR: Reset guard flags.");
+        }
+
+        [ClientRpc]
+        public void TriggerAttackClientRpc()
+        {
+            Debug.Log($"!!EAR Client!!: Trigger attack called. IsOwner={base.IsOwner}");
+            creatureAnimator.SetTrigger("attack");
+            TriggerLocalCameraShake();
+            killCooldown = 3f;
+            attackTransitionCooldown = 1.5f;
         }
 
         [ClientRpc]
         public void GrabPlayerClientRpc(int playerId)
         {
+            Debug.Log($"!!AR Client!!:Grab player called. playerId={playerId}, IsOwner={base.IsOwner}");
             if (killPlayerCoroutine != null)
             {
                 StopCoroutine(killPlayerCoroutine);
             }
             Debug.Log("Grabbed player!");
             targetPlayerHolder = StartOfRound.Instance.allPlayerScripts[playerId];
+            targetPlayerHolder.inAnimationWithEnemy = this;
             inSpecialAnimation = true;
             hasStartedKillAnim = true;
-            SwitchToBehaviourState(3);
+            if (base.IsOwner)
+            {
+                SwitchToBehaviourState(3);
+            }
             killPlayerCoroutine = StartCoroutine(executionRoutine(targetPlayerHolder));
         }
 
@@ -499,11 +655,21 @@ namespace TheEar
             {
                 agent.speed = 0f;
             }
-            targetPlayer.DamagePlayer(80, hasDamageSFX: true, callRPC: true, CauseOfDeath.Mauling, 1);
+            if (GameNetworkManager.Instance.localPlayerController == targetPlayer)
+            {
+                targetPlayer.DamagePlayer(80, hasDamageSFX: true, callRPC: true, CauseOfDeath.Mauling, 1);
+            }
+            targetPlayer.JumpToFearLevel(1f);
             float duration = 5f;
             float elapsed = 0f;
             while (elapsed < duration)
             {
+                if (base.IsOwner)
+                {
+                    agent.speed = 0f;
+                    agent.velocity = Vector3.zero;
+                }
+                targetPlayer.JumpToFearLevel(1f);
                 if (targetPlayer == null)
                 {
                     if (IsServer)
@@ -540,7 +706,10 @@ namespace TheEar
                 elapsed += Time.deltaTime;
                 yield return null;
             }
-            targetPlayer.DamagePlayer(100, hasDamageSFX: true, callRPC: true, CauseOfDeath.Mauling, 1);
+            if (GameNetworkManager.Instance.localPlayerController == targetPlayer)
+            {
+                targetPlayer.DamagePlayer(100, hasDamageSFX: true, callRPC: true, CauseOfDeath.Mauling, 1);
+            }
             if (IsServer)
             {
                 KillFinishedServerRpc((int)targetPlayer.playerClientId);
@@ -563,6 +732,7 @@ namespace TheEar
             hasStartedKillAnim = false;
             inSpecialAnimation = false;
             hearNoiseCooldown = 2f;
+            killCooldown = 3f;
             Debug.Log("EAR: Kill finished.");
             if (targetPlayerHolder != null)
             {
@@ -570,9 +740,14 @@ namespace TheEar
                 targetPlayerHolder = null;
             }
             creatureAnimator.SetBool("isExecuting", false);
+            Debug.Log($"!!EAR Client!!: Finished kill called. IsOwner={base.IsOwner}, suspicionLevel={suspicionLevel}");
             if (suspicionLevel <= 1)
             {
                 SwitchToBehaviourState(0);
+                if (base.IsOwner && !IsServer)
+                {
+                    ChangeOwnershipOfEnemy(0);
+                }
             }
             else if (suspicionLevel <= 8)
             {
@@ -609,6 +784,7 @@ namespace TheEar
             }
             inSpecialAnimation = false;
             hasStartedKillAnim = false;
+            killCooldown = 3f;
             creatureAnimator.SetBool("isExecuting", false);
 
             if (hitterId != -1)
@@ -619,9 +795,14 @@ namespace TheEar
                     targetPlayer = hitter;
                 }
             }
+            Debug.Log($"!!EAR Client!!t: Stop kiill anim called. IsOwner={base.IsOwner}, suspicionLevel={suspicionLevel}");
             if (suspicionLevel <= 1)
             {
                 SwitchToBehaviourState(0);
+                if (base.IsOwner && !IsServer)
+                {
+                    ChangeOwnershipOfEnemy(0);
+                }
             }
             else if (suspicionLevel <= 8)
             {
@@ -638,6 +819,49 @@ namespace TheEar
             }
         }
 
+        [ServerRpc(RequireOwnership = false)]
+        public void SyncSuspicionServerRpc(int level)
+        {
+            SyncSuspicionClientRpc(level);
+        }
+
+        [ClientRpc]
+        public void SyncSuspicionClientRpc(int level)
+        {
+            if (!base.IsOwner)
+            {
+                suspicionLevel = level;
+            }
+        }
+
+        [ServerRpc(RequireOwnership = false)]
+        public void SyncNoiseTargetServerRpc(Vector3 targetPosition, float distanceToNoise)
+        {
+            SyncNoiseTargetClientRpc(targetPosition, distanceToNoise);
+        }
+
+        [ClientRpc]
+        public void SyncNoiseTargetClientRpc(Vector3 targetPosition, float distanceToNoise)
+        {
+            noisePositionGuess = targetPosition;
+            lastHeardNoisePosition = targetPosition;
+            lastHeardNoiseDistanceWhenHeard = distanceToNoise;
+            ApplyNoiseAlert(targetPosition, distanceToNoise);
+        }
+
+        [ServerRpc(RequireOwnership = false)]
+        public void TriggerOverwhelmServerRpc()
+        {
+            TriggerOverwhelmClientRpc();
+        }
+
+        [ClientRpc]
+        public void TriggerOverwhelmClientRpc()
+        {
+            overwhelmTimer = 4f;
+            hasScreamedOverwhelmed = false;
+        }
+
         [ClientRpc]
         public void CancelKillAnimationWithPlayerClientRpc(int playerObjectId)
         {
@@ -652,6 +876,68 @@ namespace TheEar
             tentacleSFX.Stop();
             breathingSFX.Stop();
             footstepSFX.Stop();
+            if (tentacleL1Drop != null) tentacleL1Drop.SetActive(false);
+            if (tentacleL2Drop != null) tentacleL2Drop.SetActive(false);
+            if (tentacleRDrop != null) tentacleRDrop.SetActive(false);
+            if (tentacleMouthStink != null) tentacleMouthStink.SetActive(false);
+            if (tentacleMouthStink2 != null) tentacleMouthStink2.SetActive(false);
+            if (tentacleMouthStink3 != null) tentacleMouthStink3.SetActive(false);
+            if (earCanalGunk != null)
+            {
+                ParticleSystem[] particles = earCanalGunk.GetComponentsInChildren<ParticleSystem>();
+                for (int i = 0; i < particles.Length; i++)
+                {
+                    particles[i].Stop();
+                }
+            }
         }
+
+        [ServerRpc(RequireOwnership = false)]
+        public void BreakDoorServerRpc(NetworkObjectReference netObjRef, Vector3 force)
+        {
+            BreakDoorClientRpc(netObjRef, force);
+        }
+
+        [ClientRpc]
+        public void BreakDoorClientRpc(NetworkObjectReference netObjRef, Vector3 force)
+        {
+            if (netObjRef.TryGet(out var networkObject))
+            {
+                GameObject door = networkObject.gameObject;
+                Rigidbody rigidbody = door.AddComponent<Rigidbody>();
+                AudioSource audioSource = door.AddComponent<AudioSource>();
+                audioSource.PlayOneShot(doorSlam[enemyRandom.Next(0, doorSlam.Length)]);
+                audioSource.spatialBlend = 1f;
+                audioSource.maxDistance = 60f;
+                audioSource.rolloffMode = AudioRolloffMode.Linear;
+                audioSource.volume = 3f;
+                StartCoroutine(TurnOffC(rigidbody, 0.12f));
+                rigidbody.AddForce(force, ForceMode.Impulse);
+            }
+        }
+
+        private IEnumerator TurnOffC(Rigidbody rigidbody, float time)
+        {
+            rigidbody.detectCollisions = false;
+            yield return new WaitForSeconds(time);
+            rigidbody.detectCollisions = true;
+            if (IsServer)
+            {
+                Destroy(rigidbody.gameObject, 5f);
+            }
+        }
+
+        private void TriggerLocalCameraShake()
+        {
+            if (HUDManager.Instance != null)
+            {
+                PlayerControllerB localPlayer = GameNetworkManager.Instance.localPlayerController;
+                if (localPlayer != null && !localPlayer.isPlayerDead && Vector3.Distance(transform.position, localPlayer.transform.position) < 15f)
+                {
+                    HUDManager.Instance.ShakeCamera(ScreenShakeType.VeryStrong);
+                }
+            }
+        }
+
     }
 }
