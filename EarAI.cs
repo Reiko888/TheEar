@@ -30,6 +30,7 @@ namespace TheEar
         public GameObject tentacleMouthStink2;
         public GameObject tentacleMouthStink3;
         public GameObject earCanalGunk;
+        public GameObject executionParticles;
 
         private int earHealth;
         private float wanderSpeed;
@@ -720,6 +721,14 @@ namespace TheEar
             isExecutingKill = true;
             killCooldown = 3f;
             creatureAnimator.SetBool("isExecuting", true);
+            if (executionParticles != null)
+            {
+                ParticleSystem[] particles = executionParticles.GetComponentsInChildren<ParticleSystem>(true);
+                for (int i = 0; i < particles.Length; i++)
+                {
+                    particles[i].Play();
+                }
+            }
             if (base.IsOwner)
             {
                 SwitchToBehaviourState(3);

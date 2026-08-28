@@ -15,7 +15,7 @@ namespace TheEar
     {
         public const string modGUID = "reiko888.TheEar";
         public const string modName = "The Ear";
-        public const string modVersion = "1.0.0";
+        public const string modVersion = "1.0.1";
 
         public static Plugin Instance = null!;
         internal static new ManualLogSource Logger = null!;
